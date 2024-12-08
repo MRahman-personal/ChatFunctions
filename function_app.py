@@ -1,32 +1,74 @@
 import azure.functions as func
 import logging
+from azure.identity import DefaultAzureCredential
+from azure.cosmos import CosmosClient, PartitionKey
 
 app = func.FunctionApp()
 
+DATABASE_NAME = "studentchatdb"
+CONTAINER_NAME = "notifications"
+
+# Use DefaultAzureCredential for IAM authentication
+credential = DefaultAzureCredential()
+cosmos_client = CosmosClient(account_url="https://studentchatdb.documents.azure.com", credential=credential)
+
+# Initialize Cosmos DB database and container
+database = cosmos_client.create_database_if_not_exists(id=DATABASE_NAME)
+container = database.create_container_if_not_exists(
+    id=CONTAINER_NAME, 
+    partition_key=PartitionKey(path="/userId"),
+    offer_throughput=400
+)
+
 @app.service_bus_queue_trigger(arg_name="azservicebus", queue_name="chatnotifications",
-                               connection="studentchatnotifications_SERVICEBUS") 
+                               connection="AzureWebJobsServiceBus") 
 def NotificationProcessor(azservicebus: func.ServiceBusMessage):
-    logging.info('Python ServiceBus Queue trigger processed a message: %s',
-                azservicebus.get_body().decode('utf-8'))
+    try:
+        message_body = azservicebus.get_body().decode('utf-8')
+        logging.info(f"Processing message: {message_body}")
+        
+        notification = func.json.loads(message_body)
+        
+        container.upsert_item(notification)
+        logging.info("Notification stored in Cosmos DB successfully.")
+    except Exception as e:
+        logging.error(f"Error processing message: {str(e)}")
 
 
 @app.route(route="NotificationDispatcher", auth_level=func.AuthLevel.ANONYMOUS)
 def NotificationDispatcher(req: func.HttpRequest) -> func.HttpResponse:
-    logging.info('Python HTTP trigger function processed a request.')
+    try:
+        user_id = req.params.get('userId')
+        if not user_id:
+            return func.HttpResponse(
+                "Missing required parameter: userId",
+                status_code=400
+            )
+        query = (
+            f"SELECT * FROM Notifications n "
+            f"WHERE n.userId = @userId "
+            f"ORDER BY n._ts DESC"
+        )
+        parameters = [{"name": "@userId", "value": user_id}]
+        notifications = list(container.query_items(
+            query=query,
+            parameters=parameters,
+            enable_cross_partition_query=True
+        ))
 
-    name = req.params.get('name')
-    if not name:
-        try:
-            req_body = req.get_json()
-        except ValueError:
-            pass
-        else:
-            name = req_body.get('name')
+        notification_messages = [
+            f'Your message "{notification["message"]}" received {notification["likes"]} likes.'
+            for notification in notifications
+        ]
 
-    if name:
-        return func.HttpResponse(f"Hello, {name}. This HTTP triggered function executed successfully.")
-    else:
         return func.HttpResponse(
-             "This HTTP triggered function executed successfully. Pass a name in the query string or in the request body for a personalized response.",
-             status_code=200
+            func.json.dumps(notification_messages),
+            mimetype="application/json",
+            status_code=200
+        )
+    except Exception as e:
+        logging.error(f"Error retrieving notifications: {str(e)}")
+        return func.HttpResponse(
+            "An error occurred while retrieving notifications.",
+            status_code=500
         )
