@@ -21,7 +21,7 @@ container = database.create_container_if_not_exists(
 )
 
 @app.service_bus_queue_trigger(arg_name="azservicebus", queue_name="chatnotifications",
-                               connection="studentchatnotifications_SERVICEBUS") 
+                               connection="AzureWebJobsServiceBus") 
 def NotificationProcessor(azservicebus: func.ServiceBusMessage):
     try:
         message_body = azservicebus.get_body().decode('utf-8')
