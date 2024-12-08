@@ -1,27 +1,31 @@
 import azure.functions as func
 import logging
-from azure.identity import DefaultAzureCredential
 from azure.cosmos import CosmosClient, PartitionKey
 
 app = func.FunctionApp()
 
+import os
+
+COSMOS_CONNECTION_STRING = os.getenv("COSMOS_CONNECTION_STRING")
+SERVICE_BUS_CONNECTION_STRING = os.getenv("studentchatnotifications_SERVICEBUS")
+
 DATABASE_NAME = "studentchatdb"
 CONTAINER_NAME = "notifications"
 
-# Use DefaultAzureCredential for IAM authentication
-credential = DefaultAzureCredential()
-cosmos_client = CosmosClient(account_url="https://studentchatdb.documents.azure.com", credential=credential)
+cosmos_client = CosmosClient.from_connection_string(COSMOS_CONNECTION_STRING)
 
-# Initialize Cosmos DB database and container
 database = cosmos_client.create_database_if_not_exists(id=DATABASE_NAME)
 container = database.create_container_if_not_exists(
-    id=CONTAINER_NAME, 
+    id=CONTAINER_NAME,
     partition_key=PartitionKey(path="/userId"),
     offer_throughput=400
 )
 
-@app.service_bus_queue_trigger(arg_name="azservicebus", queue_name="chatnotifications",
-                               connection="AzureWebJobsServiceBus") 
+@app.service_bus_queue_trigger(
+    arg_name="azservicebus",
+    queue_name="chatnotifications",
+    connection="studentchatnotifications_SERVICEBUS"
+)
 def NotificationProcessor(azservicebus: func.ServiceBusMessage):
     try:
         message_body = azservicebus.get_body().decode('utf-8')
